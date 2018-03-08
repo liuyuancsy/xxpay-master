@@ -48,7 +48,7 @@
 
 <footer class="footer">
     <div class="container">
-        <p class="text-muted">&copy;2017 xxpay <script src="https://s13.cnzz.com/z_stat.php?id=1262480096&web_id=1262480096" language="JavaScript"></script></p>
+        <p class="text-muted">&copy;2018 xxpay <script src="https://s13.cnzz.com/z_stat.php?id=1262480096&web_id=1262480096" language="JavaScript"></script></p>
     </div>
 </footer>
 
