@@ -1,7 +1,14 @@
 package org.xxpay.shop.controller;
 
-import com.alibaba.fastjson.JSON;
-import com.alibaba.fastjson.JSONObject;
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
+
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -12,7 +19,11 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.ResponseBody;
 import org.xxpay.common.constant.PayConstant;
-import org.xxpay.common.util.*;
+import org.xxpay.common.util.AmountUtil;
+import org.xxpay.common.util.DateUtil;
+import org.xxpay.common.util.MyLog;
+import org.xxpay.common.util.PayDigestUtil;
+import org.xxpay.common.util.XXPayUtil;
 import org.xxpay.shop.dao.model.GoodsOrder;
 import org.xxpay.shop.service.GoodsOrderService;
 import org.xxpay.shop.util.Constant;
@@ -20,13 +31,8 @@ import org.xxpay.shop.util.OAuth2RequestParamHelper;
 import org.xxpay.shop.util.vx.WxApi;
 import org.xxpay.shop.util.vx.WxApiClient;
 
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
-import java.io.IOException;
-import java.io.PrintWriter;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.concurrent.atomic.AtomicLong;
+import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.JSONObject;
 
 @Controller
 @RequestMapping("/goods")
@@ -37,7 +43,7 @@ public class GoodsOrderController {
     @Autowired
     private GoodsOrderService goodsOrderService;
 
-    static final String mchId = "20001223";
+    static final String mchId = "10000000";
     // 加签key
     static final String reqKey = "M86l522AV6q613Ii4W6u8K48uW8vM1N6bFgyv769220MdYe9u37N4y7rI5mQ";
     // 验签key
@@ -48,6 +54,7 @@ public class GoodsOrderController {
     static final String notifyUrl = "http://127.0.0.1:8081/goods/payNotify";
     private AtomicLong seq = new AtomicLong(0L);
     private final static String QR_PAY_URL = "http://shop.xxpay.org/goods/qrPay.html";
+    private final static String OPEN_URL = "http://shop.xxpay.org/goods/toWxPay.html";
     static final String AppID = "wx077cb62e341f8a5c";
     static final String AppSecret = "e663ea068f3e4f952f143de1432a35c2";
     private final static String GetOpenIdURL = "http://shop.xxpay.org/goods/getOpenId";
@@ -172,6 +179,33 @@ public class GoodsOrderController {
     public String openQrPay(ModelMap model) {
         return "openQrPay";
     }
+    /**
+     * 跳转收银台页面
+     * 判断浏览器
+     * @param model
+     * @param request
+     * @return
+     */
+    @RequestMapping("/Pay.html")
+    public String pay(ModelMap model,HttpServletRequest request) {
+    	 String ua = request.getHeader("User-Agent");
+    	 _log.info("{}接收参数:ua={}", ua);
+    	 String view = "cashier";//收银台
+    	  String client = "";
+    	  String logPrefix = "【渠道判断】";
+         if(StringUtils.isBlank(ua)) {
+             String errorMessage = "User-Agent为空！";
+             _log.info("{}信息：{}", logPrefix, errorMessage);
+             model.put("result", "failed");
+             model.put("resMsg", errorMessage);
+             return view;
+         }else if(ua.contains("MicroMessenger")) {
+                 client = "wx";
+             }
+             model.put("client", client);
+         
+        return view;
+    }
 
     @RequestMapping("/qrPay.html")
     public String qrPay(ModelMap model, HttpServletRequest request, Long amount) {
@@ -264,13 +298,26 @@ public class GoodsOrderController {
         _log.info("插入商品订单,返回:{}", result);
         return goodsOrder;
     }
-
+    GoodsOrder createGoodsOrder2(String goodsId, Long amount,String goodName,String userId) {
+        // 先插入订单数据
+        String goodsOrderId =  String.format("%s%s%06d", "G", DateUtil.getSeqString(), (int) seq.getAndIncrement() % 1000000);
+        GoodsOrder goodsOrder = new GoodsOrder();
+        goodsOrder.setGoodsOrderId(goodsOrderId);
+        goodsOrder.setGoodsId(goodsId);
+        goodsOrder.setGoodsName(goodName);
+        goodsOrder.setAmount(amount);
+        goodsOrder.setUserId(userId);
+        goodsOrder.setStatus(Constant.GOODS_ORDER_STATUS_INIT);
+        int result = goodsOrderService.addGoodsOrder(goodsOrder);
+        _log.info("插入商品订单,返回:{}", result);
+        return goodsOrder;
+    }
     /**
      * 获取code
      * @return
      */
     @RequestMapping("/getOpenId")
-    public void getOpenId(HttpServletRequest request, HttpServletResponse response) throws IOException {
+	public void getOpenId(HttpServletRequest request, HttpServletResponse response) throws IOException {
         _log.info("进入获取用户openID页面");
         String redirectUrl = request.getParameter("redirectUrl");
         String code = request.getParameter("code");
@@ -409,6 +456,8 @@ public class GoodsOrderController {
             go.setChannelId(channelId);
             int ret = goodsOrderService.update(go);
             _log.info("修改商品订单,返回:{}", ret);
+        }else {
+        	return "fail";
         }
         if(PayConstant.PAY_CHANNEL_ALIPAY_MOBILE.equalsIgnoreCase(channelId)) return orderMap.get("payParams");
         return orderMap.get("payUrl");
@@ -426,6 +475,61 @@ public class GoodsOrderController {
         }
     }
 
+    
+    /**
+     * 微信支付请求
+     * @param request
+     * @param amount
+     * @param channelId
+     * @return
+     */
+    @RequestMapping("/toWxPay.html")
+    public String toWxPay(ModelMap model,HttpServletRequest request, Long amount, String channelId) {
+        String logPrefix = "【微信支付】";
+        _log.info("====== 开始接收微信支付请求 ======");
+        String goodsId = request.getParameter("goodId");
+        String goodsName = request.getParameter("goodsName");
+        String userId = request.getParameter("userId");
+        _log.info("{}接收参数:goodsId={},amount={},channelId={}", logPrefix, goodsId, amount, channelId);
+        Map params = new HashMap<>();
+        String openId = request.getParameter("openId");
+        // 先插入订单数据
+        GoodsOrder goodsOrder = null;
+        Map<String, String> orderMap = null;
+        if (StringUtils.isNotBlank(openId)) {
+            _log.info("{}openId：{}", logPrefix, openId);
+            params.put("openId", openId);
+            params.put("channelId", channelId);
+            // 下单
+            goodsOrder = createGoodsOrder2(goodsId, amount,goodsName,userId);
+            orderMap = createPayOrder(goodsOrder, params);
+        }else {
+        _log.info("{}获取openId",logPrefix);
+        String redirectUrl = QR_PAY_URL + "?amount=" + amount;
+        String url = GetOpenIdURL2 + "?redirectUrl=" + redirectUrl;
+        _log.info("跳转URL={}", url);
+        return "redirect:" + url;
+        }
+        model.put("goodsOrder", goodsOrder);
+        model.put("amount", AmountUtil.convertCent2Dollar(goodsOrder.getAmount()+""));
+        if(orderMap != null ) {
+        	model.put("orderMap", orderMap);
+            String payOrderId = orderMap.get("payOrderId");
+            GoodsOrder go = new GoodsOrder();
+            go.setGoodsOrderId(goodsOrder.getGoodsOrderId());
+            go.setPayOrderId(payOrderId);
+            go.setChannelId(channelId);
+            int ret = goodsOrderService.update(go);
+            _log.info("修改商品订单,返回:{}", ret);
+        }else {
+        	return "fail";
+        }
+       
+        return "qryPay";
+    }
+
+    
+    
     public Map<String, Object> request2payResponseMap(HttpServletRequest request, String[] paramArray) {
         Map<String, Object> responseMap = new HashMap<>();
         for (int i = 0;i < paramArray.length; i++) {
